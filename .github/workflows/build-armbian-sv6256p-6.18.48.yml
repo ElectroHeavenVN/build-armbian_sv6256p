@@ -148,42 +148,34 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           set -e
+          export ARCH=arm64
+          export LOCALVERSION=
+          export KCFLAGS="-Wno-error"
+
           cd /builder/work/kernel-src
 
-          # 1) Chuẩn bị config kernel
+          # 1) Prepare kernel build system
           make defconfig
-
-          # 2) BẮT BUỘC tạo Module.symvers (modules_prepare là chưa đủ)
-          make modules -j"$(nproc)"
-
-          # Chuẩn bị cây kernel để build external module
           make modules_prepare
 
-          # Build module armbian_sv6256p
-          make M=/builder/work/sv6256p-src modules -j"$(nproc)"
+          # 2) Generate Module.symvers WITHOUT building all kernel modules
+          #    (much lighter than: make modules)
+          make -C scripts/mod
+          make M=scripts/mod
 
-          # Thu thập artifacts
+          # ensure file exists
+          test -s Module.symvers || { echo "Module.symvers was not generated"; exit 1; }
+
+          # 3) Build external module
+          make M=/builder/work/sv6256p-src \
+            KBUILD_EXTRA_SYMBOLS=/builder/work/kernel-src/Module.symvers \
+            modules -j"$(nproc)"
+
           mkdir -p /builder/out
           find /builder/work/sv6256p-src -type f -name "*.ko" -print -exec cp -v {} /builder/out/ \;
-
-          # Metadata
-          KERNEL_COMMIT=$(git rev-parse HEAD)
-          cat > /builder/out/build-info.txt <<EOF
-          kernel_repo=https://github.com/${{ inputs.kernel_source }}/linux-${{ inputs.kernel_version }}
-          kernel_ref_input=${{ inputs.kernel_ref }}
-          kernel_commit=${KERNEL_COMMIT}
-          module_repo=https://github.com/${{ inputs.module_repo }}
-          module_ref=${{ inputs.module_ref }}
-          built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          EOF
-
-          echo "packaged_status=success" >> "${GITHUB_ENV}"
-          echo "packaged_outputpath=/builder/out" >> "${GITHUB_ENV}"
-          echo "status=success" >> "${GITHUB_OUTPUT}"
-
+          
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-        if: ${{ env.packaged_status == 'success' && !cancelled() }}
         with:
           name: sv6256p-${{ inputs.kernel_version }}
           path: /builder/out/*
