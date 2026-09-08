@@ -187,6 +187,8 @@ jobs:
 
           # 1) Prepare out-of-tree kernel build dir
           make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" defconfig
+          scripts/config --file "$KOUT/.config" --set-str LOCALVERSION "-ophub" || true
+          scripts/config --file "$KOUT/.config" -d LOCALVERSION_AUTO || true
           make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" modules_prepare
 
           # 2) Derive exact kernel release string from prepared tree
