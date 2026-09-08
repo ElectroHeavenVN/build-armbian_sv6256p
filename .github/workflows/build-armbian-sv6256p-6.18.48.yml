@@ -71,8 +71,8 @@ jobs:
             exit 1
           fi
 
-          echo "Installing: ${HEADER_DEB}"
-          sudo dpkg -i "${HEADER_DEB}" || sudo apt-get install -f -y
+          echo "Extracting headers: ${HEADER_DEB}"
+          sudo dpkg-deb -x "${HEADER_DEB}" /
 
           KDIR=$(find /usr/src -maxdepth 1 -type d -name "linux-headers*${KVER}*" | head -n 1)
           if [[ -z "${KDIR}" || ! -d "${KDIR}" ]]; then
