@@ -187,7 +187,6 @@ jobs:
 
           make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" defconfig
 
-          "${KDIR}/scripts/config" --file "${KOUT}/.config" --set-str LOCALVERSION "-ophub"
           "${KDIR}/scripts/config" --file "${KOUT}/.config" -d LOCALVERSION_AUTO
 
           make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" olddefconfig
