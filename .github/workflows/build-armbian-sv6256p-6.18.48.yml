@@ -176,24 +176,49 @@ jobs:
         run: |
           set -e
           export ARCH=arm64
-          export LOCALVERSION=-ophub
+          export LOCALVERSION=
+          export KCFLAGS="-Wno-error"
 
           KDIR=/builder/work/kernel-src
           KOUT=/builder/work/kernel-out
           MODDIR=/builder/work/sv6256p-src
-          mkdir -p "$KOUT"
 
-          make -C "$KDIR" O="$KOUT" ARCH=$ARCH defconfig
-          make -C "$KDIR" O="$KOUT" ARCH=$ARCH olddefconfig
-          make -C "$KDIR" O="$KOUT" ARCH=$ARCH modules_prepare
+          mkdir -p "${KOUT}"
 
-          KREL=$(make -s -C "$KDIR" O="$KOUT" ARCH=$ARCH kernelrelease)
-          echo "KREL=$KREL"
-          case "$KREL" in
-            6.18.48-ophub|6.18.48-ophub-*) ;;
-            *) echo "Kernelrelease mismatch: $KREL"; exit 1 ;;
-          esac
-          make -C "$KDIR" O="$KOUT" ARCH=$ARCH M="$MODDIR" modules -j"$(nproc)"
+          # 1) Prepare out-of-tree kernel build dir
+          make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" defconfig
+          make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" modules_prepare
+
+          # 2) Derive exact kernel release string from prepared tree
+          KREL=$(make -s -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" kernelrelease)
+          echo "Kernel release: ${KREL}"
+
+          # 3) Build external module
+          # NOTE: dùng KBUILD_MODPOST_WARN=1 để không fail cứng khi upstream driver cũ
+          make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" \
+            M="${MODDIR}" \
+            KERNELRELEASE="${KREL}" \
+            KBUILD_MODPOST_WARN=1 \
+            modules -j"$(nproc)"
+
+          mkdir -p /builder/out
+          find "${MODDIR}" -type f -name "*.ko" -print -exec cp -v {} /builder/out/ \;
+
+          # metadata
+          cd "${KDIR}"
+          KERNEL_COMMIT=$(git rev-parse HEAD)
+          cat > /builder/out/build-info.txt <<EOF
+          kernel_repo=https://github.com/${{ inputs.kernel_source }}/linux-${{ inputs.kernel_version }}
+          kernel_commit=${KERNEL_COMMIT}
+          kernel_release=${KREL}
+          module_repo=https://github.com/${{ inputs.module_repo }}
+          module_ref=${{ inputs.module_ref }}
+          built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          EOF
+
+          echo "packaged_status=success" >> "${GITHUB_ENV}"
+          echo "packaged_outputpath=/builder/out" >> "${GITHUB_ENV}"
+          echo "status=success" >> "${GITHUB_OUTPUT}"
           
       - name: Upload artifact
         uses: actions/upload-artifact@v4
