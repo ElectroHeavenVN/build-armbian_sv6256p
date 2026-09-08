@@ -1,102 +1,184 @@
-name: Build armbian_sv6256p for kernel 6.18.48
+#==========================================================================
+# Description: Compile armbian_sv6256p against mainline stable kernel
+#==========================================================================
+
+name: Compile SV6256P mainline stable kernel module
 
 on:
+  repository_dispatch:
   workflow_dispatch:
-  push:
-    branches: [ "main" ]
-    paths:
-      - ".github/workflows/build-armbian-sv6256p-6.18.48.yml"
+    inputs:
+      kernel_source:
+        description: "Kernel source owner"
+        required: false
+        default: "ophub"
+        type: choice
+        options:
+          - ophub
+          - unifreq
+      kernel_version:
+        description: "Kernel branch"
+        required: false
+        default: "6.18.y"
+        type: choice
+        options:
+          - 6.18.y
+      kernel_ref:
+        description: "Optional fixed commit/tag (leave empty to use latest main)"
+        required: false
+        default: ""
+        type: string
+      module_repo:
+        description: "SV6256P module repository"
+        required: false
+        default: "cdhigh/armbian_sv6256p"
+        type: string
+      module_ref:
+        description: "SV6256P branch/tag/commit"
+        required: false
+        default: "main"
+        type: string
+      ccache_clear:
+        description: "Clear ccache"
+        required: false
+        default: false
+        type: boolean
 
 env:
   TZ: Etc/UTC
-  KERNEL_VERSION: "6.18.48"
-  KERNEL_BRANCH: "6.18.y"
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04-arm
+    if: ${{ github.event.repository.owner.id == github.event.sender.id }}
     permissions:
       contents: write
 
     steps:
       - name: Checkout current repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Install dependencies
+      - name: Initialize build environment
+        id: init
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git curl wget xz-utils zstd \
-            build-essential bc bison flex libssl-dev libelf-dev \
-            dwarves kmod ccache rsync jq
+          docker rmi -f $(docker images -q) 2>/dev/null || true
+          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null
+          sudo swapoff -a || true
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo apt-get -y update
+          sudo apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2604-build-armbian-depends)
+          sudo apt-get -y install jq rsync ccache git bc bison flex libssl-dev libelf-dev
+          sudo systemctl daemon-reload
+          sudo apt-get -y autoremove --purge
+          sudo apt-get clean
+          sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
+          sudo rm -rf ~/{.cargo,.dotnet,.rustup}
+          sudo timedatectl set-timezone "${TZ:-Etc/UTC}"
+          sudo ntpdate ntp.ubuntu.com 0.pool.ntp.org || true
+          sudo timedatectl set-ntp true
+          date -u
+          timedatectl status || true
+          echo "status=success" >> "${GITHUB_OUTPUT}"
 
-      - name: Clone ophub/kernel (reference)
+      - name: Create virtual disk for extended storage
+        id: disk
         run: |
-          git clone --depth=1 https://github.com/ophub/kernel.git ophub-kernel
-          echo "Cloned ophub/kernel"
-          ls -la ophub-kernel | head -n 40
+          root_avail=$(df --block-size=1G / | tail -1 | awk '{print $4}')
+          root_size=$(( root_avail - 4 ))
+          [[ "${root_size}" -gt 0 ]] || { echo "Error: Insufficient space on /: ${root_avail}G available"; exit 1; }
 
-      - name: Clone cdhigh/armbian_sv6256p
+          sudo truncate -s "${root_size}"G /root.img
+          build_dev=$(sudo losetup --find --show /root.img)
+          echo "Using /: ${root_size}G"
+
+          sudo mkfs.xfs -f -i sparse=0 -b size=4096 "${build_dev}"
+          sudo mkdir -p /builder
+          sudo mount "${build_dev}" /builder
+          sudo chown -R runner:runner /builder
+          df -Th
+          echo "status=success" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve kernel source hash
+        id: kernelhash
         run: |
-          git clone --depth=1 https://github.com/cdhigh/armbian_sv6256p.git armbian_sv6256p
-          echo "Cloned cdhigh/armbian_sv6256p"
-          ls -la armbian_sv6256p
+          api_url="https://api.github.com/repos/${{ inputs.kernel_source }}/linux-${{ inputs.kernel_version }}/git/ref/heads/main"
+          source_hash=$(curl -fsSL -m 20 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "${api_url}" | jq -r '.object.sha')
 
-      - name: Download Linux kernel source 6.18.48
+          [[ -z "${source_hash}" || "${source_hash}" == "null" ]] && source_hash="${{ github.sha }}"
+          echo "source_hash=${source_hash}" >> "${GITHUB_ENV}"
+          echo "status=success" >> "${GITHUB_OUTPUT}"
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: /builder/ccache
+          key: sv6256p-${{ inputs.kernel_source }}-${{ inputs.kernel_version }}-${{ env.source_hash }}-${{ inputs.module_ref }}
+          restore-keys: |
+            sv6256p-${{ inputs.kernel_source }}-${{ inputs.kernel_version }}-
+
+      - name: Clone kernel and module repositories
+        if: ${{ steps.disk.outputs.status == 'success' && !cancelled() }}
         run: |
           set -e
-          KVER="${KERNEL_VERSION}"
-          MAJOR="${KVER%%.*}"                      # 6
-          TAR="linux-${KVER}.tar.xz"
-          URL="https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/${TAR}"
+          mkdir -p /builder/work
+          cd /builder/work
 
-          mkdir -p work
-          cd work
-          echo "Downloading: ${URL}"
-          curl -fL --retry 3 -o "${TAR}" "${URL}"
-          tar -xf "${TAR}"
-          echo "KDIR=$(pwd)/linux-${KVER}" >> $GITHUB_ENV
+          # Clone kernel repo giống compile-mainline-stable-kernel.yml (nguồn GitHub)
+          git clone --depth=1 "https://github.com/${{ inputs.kernel_source }}/linux-${{ inputs.kernel_version }}.git" kernel-src
+          cd kernel-src
 
-      - name: Prepare kernel tree for external module build
+          # Nếu người dùng muốn khóa đúng commit/tag (ví dụ v6.18.48) thì checkout tại đây
+          if [[ -n "${{ inputs.kernel_ref }}" ]]; then
+            git fetch --tags --force
+            git checkout "${{ inputs.kernel_ref }}"
+          fi
+
+          cd /builder/work
+          git clone --depth=1 --branch "${{ inputs.module_ref }}" "https://github.com/${{ inputs.module_repo }}.git" sv6256p-src
+
+      - name: Build SV6256P module
+        id: build
+        if: ${{ !cancelled() }}
         run: |
           set -e
-          cd "${KDIR}"
+          cd /builder/work/kernel-src
+
+          # Chuẩn bị cây kernel để build external module
           make defconfig
           make modules_prepare
 
-      - name: Build SV6256P module
-        run: |
-          set -e
-          cd "${KDIR}"
+          # Build module armbian_sv6256p
+          make M=/builder/work/sv6256p-src modules -j"$(nproc)"
 
-          # Build external module from cloned repo
-          make M="${GITHUB_WORKSPACE}/armbian_sv6256p" modules -j"$(nproc)"
+          # Thu thập artifacts
+          mkdir -p /builder/out
+          find /builder/work/sv6256p-src -type f -name "*.ko" -print -exec cp -v {} /builder/out/ \;
 
-          mkdir -p "${GITHUB_WORKSPACE}/out"
-          find "${GITHUB_WORKSPACE}/armbian_sv6256p" -type f -name "*.ko" -print -exec cp -v {} "${GITHUB_WORKSPACE}/out/" \;
-
-          # Save metadata
-          cat > "${GITHUB_WORKSPACE}/out/build-info.txt" <<EOF
-          kernel_version=${KERNEL_VERSION}
-          kernel_branch=${KERNEL_BRANCH}
+          # Metadata
+          KERNEL_COMMIT=$(git rev-parse HEAD)
+          cat > /builder/out/build-info.txt <<EOF
+          kernel_repo=https://github.com/${{ inputs.kernel_source }}/linux-${{ inputs.kernel_version }}
+          kernel_ref_input=${{ inputs.kernel_ref }}
+          kernel_commit=${KERNEL_COMMIT}
+          module_repo=https://github.com/${{ inputs.module_repo }}
+          module_ref=${{ inputs.module_ref }}
           built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          runner=${RUNNER_OS}
           EOF
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sv6256p-kernel-${{ env.KERNEL_VERSION }}
-          path: out/*
+          echo "packaged_status=success" >> "${GITHUB_ENV}"
+          echo "packaged_outputpath=/builder/out" >> "${GITHUB_ENV}"
+          echo "status=success" >> "${GITHUB_OUTPUT}"
 
-      - name: Create/Update Release (optional)
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: ${{ env.packaged_status == 'success' && !cancelled() }}
         with:
-          tag_name: sv6256p-kernel-${{ env.KERNEL_VERSION }}
-          name: sv6256p for kernel ${{ env.KERNEL_VERSION }}
-          files: out/*
-          draft: false
-          prerelease: false
+          name: sv6256p-${{ inputs.kernel_version }}
+          path: /builder/out/*
