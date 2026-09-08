@@ -1,0 +1,102 @@
+name: Build armbian_sv6256p for kernel 6.18.48
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/build-armbian-sv6256p-6.18.48.yml"
+
+env:
+  TZ: Etc/UTC
+  KERNEL_VERSION: "6.18.48"
+  KERNEL_BRANCH: "6.18.y"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git curl wget xz-utils zstd \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            dwarves kmod ccache rsync jq
+
+      - name: Clone ophub/kernel (reference)
+        run: |
+          git clone --depth=1 https://github.com/ophub/kernel.git ophub-kernel
+          echo "Cloned ophub/kernel"
+          ls -la ophub-kernel | head -n 40
+
+      - name: Clone cdhigh/armbian_sv6256p
+        run: |
+          git clone --depth=1 https://github.com/cdhigh/armbian_sv6256p.git armbian_sv6256p
+          echo "Cloned cdhigh/armbian_sv6256p"
+          ls -la armbian_sv6256p
+
+      - name: Download Linux kernel source 6.18.48
+        run: |
+          set -e
+          KVER="${KERNEL_VERSION}"
+          MAJOR="${KVER%%.*}"                      # 6
+          TAR="linux-${KVER}.tar.xz"
+          URL="https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/${TAR}"
+
+          mkdir -p work
+          cd work
+          echo "Downloading: ${URL}"
+          curl -fL --retry 3 -o "${TAR}" "${URL}"
+          tar -xf "${TAR}"
+          echo "KDIR=$(pwd)/linux-${KVER}" >> $GITHUB_ENV
+
+      - name: Prepare kernel tree for external module build
+        run: |
+          set -e
+          cd "${KDIR}"
+          make defconfig
+          make modules_prepare
+
+      - name: Build SV6256P module
+        run: |
+          set -e
+          cd "${KDIR}"
+
+          # Build external module from cloned repo
+          make M="${GITHUB_WORKSPACE}/armbian_sv6256p" modules -j"$(nproc)"
+
+          mkdir -p "${GITHUB_WORKSPACE}/out"
+          find "${GITHUB_WORKSPACE}/armbian_sv6256p" -type f -name "*.ko" -print -exec cp -v {} "${GITHUB_WORKSPACE}/out/" \;
+
+          # Save metadata
+          cat > "${GITHUB_WORKSPACE}/out/build-info.txt" <<EOF
+          kernel_version=${KERNEL_VERSION}
+          kernel_branch=${KERNEL_BRANCH}
+          built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          runner=${RUNNER_OS}
+          EOF
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sv6256p-kernel-${{ env.KERNEL_VERSION }}
+          path: out/*
+
+      - name: Create/Update Release (optional)
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sv6256p-kernel-${{ env.KERNEL_VERSION }}
+          name: sv6256p for kernel ${{ env.KERNEL_VERSION }}
+          files: out/*
+          draft: false
+          prerelease: false
