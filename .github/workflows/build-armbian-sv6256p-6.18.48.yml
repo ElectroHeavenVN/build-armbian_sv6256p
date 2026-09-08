@@ -141,7 +141,35 @@ jobs:
 
           cd /builder/work
           git clone --depth=1 --branch "${{ inputs.module_ref }}" https://github.com/${{ inputs.module_repo }}.git sv6256p-src
+     
+      - name: Resolve kernel ref for 6.18.48-ophub
+        id: resolve_ref
+        run: |
+          set -e
+          cd /builder/work/kernel-src
+          git fetch --tags --force
 
+          # Ưu tiên input kernel_ref nếu user truyền
+          if [[ -n "${{ inputs.kernel_ref }}" ]]; then
+            git checkout "${{ inputs.kernel_ref }}"
+          else
+            # Tìm commit có Makefile version đúng 6.18.48
+            # (ophub thường thêm LOCALVERSION=-ophub, còn patchlevel nằm trong Makefile)
+            target_commit=$(git rev-list --all -- Makefile | while read c; do
+              v=$(git show "$c:Makefile" 2>/dev/null | awk -F' = ' '
+                /^VERSION = /{V=$2}
+                /^PATCHLEVEL = /{P=$2}
+                /^SUBLEVEL = /{S=$2}
+                END{if(V&&P&&S) printf "%s.%s.%s",V,P,S}')
+              [[ "$v" == "6.18.48" ]] && { echo "$c"; break; }
+            done)
+
+            [[ -n "$target_commit" ]] || { echo "Cannot resolve commit for 6.18.48"; exit 1; }
+            git checkout "$target_commit"
+          fi
+
+          echo "kernel_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          
       - name: Build SV6256P module
         id: build
         if: ${{ !cancelled() }}
