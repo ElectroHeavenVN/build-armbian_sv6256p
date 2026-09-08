@@ -130,68 +130,40 @@ jobs:
           mkdir -p /builder/work
           cd /builder/work
 
-          # Clone kernel repo giống compile-mainline-stable-kernel.yml (nguồn GitHub)
-          git clone --depth=1 "https://github.com/${{ inputs.kernel_source }}/linux-${{ inputs.kernel_version }}.git" kernel-src
+          git clone https://github.com/${{ inputs.kernel_source }}/linux-${{ inputs.kernel_version }}.git kernel-src
           cd kernel-src
 
-          # Nếu người dùng muốn khóa đúng commit/tag (ví dụ v6.18.48) thì checkout tại đây
+          # BẮT BUỘC pin đúng ref cho kernel runtime
           if [[ -n "${{ inputs.kernel_ref }}" ]]; then
             git fetch --tags --force
             git checkout "${{ inputs.kernel_ref }}"
           fi
 
           cd /builder/work
-          git clone --depth=1 --branch "${{ inputs.module_ref }}" "https://github.com/${{ inputs.module_repo }}.git" sv6256p-src
+          git clone --depth=1 --branch "${{ inputs.module_ref }}" https://github.com/${{ inputs.module_repo }}.git sv6256p-src
 
       - name: Build SV6256P module
         id: build
         if: ${{ !cancelled() }}
-        run: |
+        run: 
           set -e
           export ARCH=arm64
-          export LOCALVERSION=
-          export KCFLAGS="-Wno-error"
+          export LOCALVERSION=-ophub
 
           KDIR=/builder/work/kernel-src
           KOUT=/builder/work/kernel-out
           MODDIR=/builder/work/sv6256p-src
+          mkdir -p "$KOUT"
 
-          mkdir -p "${KOUT}"
+          make -C "$KDIR" O="$KOUT" ARCH=$ARCH defconfig
+          make -C "$KDIR" O="$KOUT" ARCH=$ARCH olddefconfig
+          make -C "$KDIR" O="$KOUT" ARCH=$ARCH modules_prepare
 
-          # 1) Prepare out-of-tree kernel build dir
-          make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" defconfig
-          make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" modules_prepare
+          KREL=$(make -s -C "$KDIR" O="$KOUT" ARCH=$ARCH kernelrelease)
+          echo "KREL=$KREL"
+          test "$KREL" = "6.18.48-ophub" || { echo "Kernelrelease mismatch: $KREL"; exit 1; }
 
-          # 2) Derive exact kernel release string from prepared tree
-          KREL=$(make -s -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" kernelrelease)
-          echo "Kernel release: ${KREL}"
-
-          # 3) Build external module
-          # NOTE: dùng KBUILD_MODPOST_WARN=1 để không fail cứng khi upstream driver cũ
-          make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" \
-            M="${MODDIR}" \
-            KERNELRELEASE="${KREL}" \
-            KBUILD_MODPOST_WARN=1 \
-            modules -j"$(nproc)"
-
-          mkdir -p /builder/out
-          find "${MODDIR}" -type f -name "*.ko" -print -exec cp -v {} /builder/out/ \;
-
-          # metadata
-          cd "${KDIR}"
-          KERNEL_COMMIT=$(git rev-parse HEAD)
-          cat > /builder/out/build-info.txt <<EOF
-          kernel_repo=https://github.com/${{ inputs.kernel_source }}/linux-${{ inputs.kernel_version }}
-          kernel_commit=${KERNEL_COMMIT}
-          kernel_release=${KREL}
-          module_repo=https://github.com/${{ inputs.module_repo }}
-          module_ref=${{ inputs.module_ref }}
-          built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          EOF
-
-          echo "packaged_status=success" >> "${GITHUB_ENV}"
-          echo "packaged_outputpath=/builder/out" >> "${GITHUB_ENV}"
-          echo "status=success" >> "${GITHUB_OUTPUT}"
+          make -C "$KDIR" O="$KOUT" ARCH=$ARCH M="$MODDIR" modules -j"$(nproc)"
           
       - name: Upload artifact
         uses: actions/upload-artifact@v4
