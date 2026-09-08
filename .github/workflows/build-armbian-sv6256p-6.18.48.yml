@@ -145,7 +145,7 @@ jobs:
       - name: Build SV6256P module
         id: build
         if: ${{ !cancelled() }}
-        run: 
+        run: |
           set -e
           export ARCH=arm64
           export LOCALVERSION=-ophub
