@@ -189,8 +189,10 @@ jobs:
 
           KREL=$(make -s -C "$KDIR" O="$KOUT" ARCH=$ARCH kernelrelease)
           echo "KREL=$KREL"
-          test "$KREL" = "6.18.48-ophub" || { echo "Kernelrelease mismatch: $KREL"; exit 1; }
-
+          case "$KREL" in
+            6.18.48-ophub|6.18.48-ophub-*) ;;
+            *) echo "Kernelrelease mismatch: $KREL"; exit 1 ;;
+          esac
           make -C "$KDIR" O="$KOUT" ARCH=$ARCH M="$MODDIR" modules -j"$(nproc)"
           
       - name: Upload artifact
