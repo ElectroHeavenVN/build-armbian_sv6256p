@@ -176,7 +176,7 @@ jobs:
         run: |
           set -e
           export ARCH=arm64
-          export LOCALVERSION=
+          export LOCALVERSION=-ophub
           export KCFLAGS="-Wno-error"
 
           KDIR=/builder/work/kernel-src
