@@ -178,29 +178,23 @@ jobs:
           export ARCH=arm64
           export LOCALVERSION=-ophub
           export KCFLAGS="-Wno-error"
-
           KDIR=/builder/work/kernel-src
           KOUT=/builder/work/kernel-out
           MODDIR=/builder/work/sv6256p-src
-
           mkdir -p "${KOUT}"
-
           make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" defconfig
-
           "${KDIR}/scripts/config" --file "${KOUT}/.config" -d LOCALVERSION_AUTO
-
           make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" olddefconfig
           make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" modules_prepare
-
           KREL="$(make -s -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" kernelrelease)"
           echo "Kernel release: ${KREL}"
           test "${KREL}" = "6.18.48-ophub" || { echo "Kernelrelease mismatch: ${KREL}"; exit 1; }
-
-          # Build external module
-          make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" \
-            M="${MODDIR}" \
-            KBUILD_MODPOST_WARN=1 \
-            modules -j"$(nproc)"
+          make -C "${KDIR}" O="${KOUT}" ARCH="${ARCH}" M="${MODDIR}" KBUILD_MODPOST_WARN=1 modules -j"$(nproc)"
+          
+          mkdir -p /builder/out
+          cp -av "${MODDIR}/"*.ko /builder/out/
+          modinfo /builder/out/ssv6x5x.ko | egrep 'filename|name|vermagic|depends' | tee /builder/out/modinfo.txt
+          ls -lah /builder/out
             
       - name: Upload artifact
         uses: actions/upload-artifact@v4
