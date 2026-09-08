@@ -150,8 +150,13 @@ jobs:
           set -e
           cd /builder/work/kernel-src
 
-          # Chuẩn bị cây kernel để build external module
+          # 1) Chuẩn bị config kernel
           make defconfig
+
+          # 2) BẮT BUỘC tạo Module.symvers (modules_prepare là chưa đủ)
+          make modules -j"$(nproc)"
+
+          # Chuẩn bị cây kernel để build external module
           make modules_prepare
 
           # Build module armbian_sv6256p
